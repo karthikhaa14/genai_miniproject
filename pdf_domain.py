@@ -10,10 +10,10 @@ import time
 import os
 from dotenv import load_dotenv
 
-# Load environment variables
+
 load_dotenv()
 
-# Configure Gemini API
+# Configuring API for Gemini model
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # NeonDB Connection
@@ -33,10 +33,13 @@ def split_text_into_chunks(text, chunk_size=500):
     words = text.split()
     return [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
 
+
 # Function to extract text from PDF
 def extract_text_from_pdf(pdf_file):
     pdf_reader = PyPDF2.PdfReader(pdf_file)
     return "\n".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
+    
+    
 
 # Function to scrape website content
 def scrape_website(url):
@@ -52,35 +55,28 @@ def scrape_website(url):
 
 # Function to store embeddings
 def store_embeddings(source, text):
-
-    # Check if any embeddings exist for this source
     cursor.execute("SELECT 1 FROM embeddings WHERE source = %s LIMIT 1", (source,))
-    exists = cursor.fetchone()  # Will be None if no record exists
-
+    exists = cursor.fetchone()
     if exists:
         print(f"Embeddings for {source} already exist. Skipping storage.")
-        return  # Skip storage if embeddings already exist
+        return
 
-    # If embeddings do not exist, proceed with storing them
     chunks = split_text_into_chunks(text)
     for i, chunk in enumerate(chunks):
         embedding = embed_model.encode(chunk).tolist()
         cursor.execute(
             "INSERT INTO embeddings (source, chunk_id, content, embedding) VALUES (%s, %s, %s, %s)",
-            (source, i, chunk, Json(embedding))
+            (source, i, chunk, embedding)
         )
     conn.commit()
-    print(f"Embeddings stored for {source}.")
 
-
-# Function to retrieve relevant chunks
-def search_embeddings(query, top_k=10):
+def search_embeddings(query):
     query_embedding = embed_model.encode(query).tolist()
     cursor.execute("""
     SELECT source, content FROM embeddings
-    ORDER BY embedding <-> %s
-    LIMIT %s;
-    """, (Json(query_embedding), top_k))
+    ORDER BY embedding <-> %s ::vector
+    LIMIT 5;
+    """, ((query_embedding),))
     return cursor.fetchall()
 
 # Function to query Gemini API
@@ -103,27 +99,36 @@ def ask_gemini(question, context):
     return answer
 
 # Streamlit Layout
-st.set_page_config(page_title="AI Chatbot", layout="wide")
+st.markdown("<h1 style='text-align: center; color: #800080;'>Explore Your PDFs and Websites</h1>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.title("Chat History")
-    for chat in st.session_state.chat_history[-10:]:
-        st.write(chat)
+    
+    # Button to start a new chat
+    if st.button("New Chat"):
+        cursor.execute("DELETE FROM embeddings;")  
+        conn.commit()
+        st.session_state.chat_history = [] 
+        st.success("New chat started!")
 
-st.title("AI-Powered Search on PDFs & Websites")
+    with st.expander("View Chat History"):
+        for chat in st.session_state.chat_history[-10:]:
+            st.write(chat)
+
+st.title("Upload files or Enter Website URL here!")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    uploaded_files = st.file_uploader("Upload a PDF", type=["pdf"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("📃 Upload a PDF", type=["pdf"], accept_multiple_files=True)
     if uploaded_files:
-        for uploaded_file in uploaded_files:  # Loop through multiple files
-            pdf_text = extract_text_from_pdf(uploaded_file)  # Extract text for each file
-            store_embeddings(uploaded_file.name, pdf_text)  # Store embeddings
+        for uploaded_file in uploaded_files:
+            pdf_text = extract_text_from_pdf(uploaded_file)
+            store_embeddings(uploaded_file.name, pdf_text)
         st.success("PDF content chunked, embedded, and stored.")
 
 with col2:
-    website_url = st.text_input("Enter Website URL")
+    website_url = st.text_input("📎Enter Website URL")
     if st.button("Scrape Website"):
         site_content = scrape_website(website_url)
         store_embeddings(website_url, site_content)
@@ -131,10 +136,14 @@ with col2:
 
 query = st.text_input("Ask a question")
 if st.button("Search & Answer"):
-    top_results = search_embeddings(query, top_k=10)
+    top_results = search_embeddings(query)
     if top_results:
         sources = "\n".join([f"Source: {src}\nContent: {txt}..." for src, txt in top_results])
         answer = ask_gemini(query, sources)
-        st.markdown(f"### Answer: {answer}")
+        st.markdown(f"Response: {answer}")
+
+        with st.expander("📌 References"):
+            for src, txt in top_results:
+                st.text(f"Source: {src}\nContent: {txt[:500]}...")
     else:
         st.write("Could not find a relevant answer.")
